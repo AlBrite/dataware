@@ -1,0 +1,1 @@
+export const typeOfTest = type => thing => typeof thing === type;

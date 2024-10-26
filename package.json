@@ -1,0 +1,21 @@
+{
+  "name": "vue-use-hooks",
+  "version": "1.0.0",
+  "description": "A collection of Vue composition hooks for managing state, forms, and HTTP requests.",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "echo 'Building the package...'"
+  },
+  "keywords": [
+    "vue",
+    "hooks",
+    "forms",
+    "http"
+  ],
+  "author": "Bright Lotanna",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^0.21.1",
+    "vue": "^3.0.0"
+  }
+}
