@@ -6,13 +6,20 @@ This is a comprehensive guide to the `FormGuardJs` class, inspired by Laravel’
 
 - [Introduction](#introduction)
 - [Installation](#installation)
-- [Usage](#usage)
-  - [Basic Example](#basic-example)
-  - [Validation Rules](#validation-rules)
-  - [Custom Messages](#custom-messages)
-  - [Attributes](#attributes)
-  - [Custom Callbacks](#custom-callbacks)
 - [Validation Rules Reference](#validation-rules-reference)
+  - [Required Rules](#required-rules)
+  -	[Data Type Rules](#data-type-rules)
+  - [String Formatting Rules](#string-formatting-rules)
+  - [Special Rules](#special-rules)
+  - [Comparison Rules](#comparison-rules)
+  - [Miscellaneous Rules](#,iscellaneous-rules) 
+- [Usage](#usage)
+  - [Basic Examples](#basic-examples)
+  - [Advanced Examples](#advanced-examples)
+- [Customizations](#custoizations)
+  - [Custom Messages](#custom-messages)
+  - [Custom Attributes](#custom-attributes)
+  - [Custom Rule Callbacks](#custom-rule-callbacks)
 
 ## Introduction
 
@@ -24,7 +31,7 @@ You can install the FormGuard in your project by including the `FormGuard` class
 
 ## Usage
 
-### Basic Example
+### Basic Examples
 
 Here’s a simple example that validates the `name` and `age` fields with basic rules:
 
@@ -93,9 +100,54 @@ FormGuard.make(rules, messages, attributes)
     });
 ```
 
-### Custom Callbacks
+### Custom Rule Callbacks
 
-You can use custom validation callbacks as part of the rules:
+#### Define Custom Callbacks
+
+```js
+FormGuard.add('exists', ({value, fails}) => {
+    if (!value) {
+        fails('Name already exists');
+    }
+});
+```
+
+
+```js
+FormGuard.add('exists', ({value, fails}) => {
+    return value !== false;
+});
+```
+
+### Definine Custom Callbacks with options
+
+```js
+FormGuard.add({
+    exists: {
+        fn: ({value, fails}) => value,
+        message: 'Name already exists'
+    },
+
+    // Add more custom Rules
+});
+```
+
+
+### Defining custom Rules globally
+
+go to `./core/config.js`, inside customRules define the rules
+like
+
+```js
+{
+    customRules: {
+        ruleName: {
+            fn: () => {}, // Define the callback here
+            message: 'Custom Message'
+        }
+    }
+}
+```
 
 ```js
 FormGuard.exists = ({ value, fails }) => {
@@ -103,7 +155,11 @@ FormGuard.exists = ({ value, fails }) => {
         fails('Name already exists');
     }
 };
+```
 
+You can use custom validation callbacks as part of the rules:
+
+```js
 // Usages of custom callbacks
 const rules1 = {
     name: ['required', 'min:5', FormGuard.exists],
@@ -189,7 +245,7 @@ FormGuard.make(rules, messages, attributes);
 | Rule                    | Description                                                      |
 |-------------------------|------------------------------------------------------------------|
 | `trim`                  | The field's value will be trimmed of whitespace.                |
-| `capitalize`            | The field's value will be capitalized.                          |
+| `capitalize:scope`            | The field's value will be capitalized if `scope` is not provided. Set `all` scope to capitalize all the value. Set `none` scope to uncapitalize all the value                          |
 | `lowercase`             | The field's value must be lowercase.                            |
 | `uppercase`             | The field's value must be uppercase.                            |
 | `alpha`                 | The field must contain only alphabetic characters.              |
@@ -256,7 +312,7 @@ const messages = {
 };
 ```
 
-## Attributes
+## Custom Attributes
 
 You can customize attribute names for friendlier error messages by passing an `attributes` object:
 
@@ -337,4 +393,79 @@ FormGuard.make(rules, messages, attributes)
     .catch(error => {
         console.error(error);
     });
+```
+
+
+### Using defineForm To Validate Form
+
+```js
+FormGuard.defineForm(
+    formSelector,
+    rules,
+    messages,
+    attributes
+);
+```
+
+Usage:
+
+```html
+    <!--index.html-->
+    <html>
+        <head>
+            ...
+            <script src="http://npmpackagelist.org/formguard.js"></script>
+
+        </head>
+        <body>
+
+            <form method="POST" action="/api/login" id="signup-form">
+                <input type="text" name="email"/>
+                <input type="text" name="first_name"/>
+                <input type="text" name="last_name"/>
+                <input type="text" name="username"/>
+                <input type="password" name="password"/>
+                <input type="password" name="password_confirmation"/>
+                <button type="submit">Sign Up</button>
+            </form>
+
+        </body>
+        <script src="./index.js"></script>
+    </html>
+```
+
+```js
+// index.js
+const rules = {
+    email: 'required|email',
+    first_name: 'required|alpha',
+    last_name: 'required|alpha',
+    password: 'required|password|confirmed'
+};
+
+const messages = {
+    emailRequired: 'Email Address is required',
+    first_nameRequired: ':attribute is requred',
+};
+
+const attributes = {
+    first_name: 'First Name',
+    last_name: 'Last Name',
+};
+
+
+const validator = FormGuard.defineForm(
+    'signup-form',
+    rules,
+    messages,
+    attributes
+);
+
+validator
+.on('submitted', (response, {setAuth}) => {
+    setAuth(response.token);
+})
+.on('submit', ({validated, formData}) => {
+
+})
 ```

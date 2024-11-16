@@ -1,21 +1,47 @@
 {
-  "name": "vue-use-hooks",
-  "version": "1.0.0",
+  "name": "form-guard",
+  "version": "0.0.1",
   "description": "A collection of Vue composition hooks for managing state, forms, and HTTP requests.",
-  "main": "src/index.js",
+  "main": "dist/index.cjs",
+  "types": "index.d.ts",
+  "module": "dist/index.mjs",
+  "unpkg": "dist/index.iife.min.js",
+  "jsdelivr": "dist/index.iife.min.js",
+
+  "files": [
+    "dist",
+    "index.d.ts"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./*": "./*"
+  },
+
   "scripts": {
-    "build": "echo 'Building the package...'"
+    "build": "webpack --config webpack.config.js",
+    "dev": "yarn build --watch"
   },
   "keywords": [
-    "vue",
+    "front-end",
     "hooks",
     "forms",
     "http"
   ],
   "author": "Bright Lotanna",
   "license": "MIT",
-  "dependencies": {
-    "axios": "^0.21.1",
-    "vue": "^3.0.0"
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "terser-webpack-plugin": "^5.3.10",
+    "webpack": "^5.96.1",
+    "webpack-cli": "^5.1.4"
   }
 }

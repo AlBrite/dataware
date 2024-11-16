@@ -1,78 +1,140 @@
-import { ValidationError, KnownError } from "../core/exceptions";
-import locales from '../locales';
-import utils from "../core/utils";
+import { ValidationError, KnownError } from "../exceptions";
+import config from '../config';
+import utils from "../utils";
 
+const _keys = Object.keys(config.locales);
+const system_locale = _keys.length > 0 ? _keys[0] : 'en';
 
-window.utils = utils;
+const registers = {
+    types: [
+        "blob",
+        "date",
+        "datetime",
+        "array",
+        "object",
+        "numeric",
+        "integer",
+        "string",
+        "file",
+        "files",
+        "boolean",
+        "url",
+        "ip",
+        "email",
+        "uuid"
+    ],
+    stabilizers: ["trim", "capitalize", "format_date"],
+    fillables: [
+        "if_empty",
+        "fill",
+        "fillable",
+        "nullable",
+        "required",
+        "required_if",
+        "required_unless",
+        "required_with",
+        "required_with_all",
+        "required_without",
+        "required_without_all",
+    ],
+};
+
 
 export class FormGuard {
-    _hasFile = false;783
-    static locale = locales.fallback_locale;
-    fallback_messages = null;
-    user_defined_messages = {};
+    _hasFile = false;
+    static locale_keys = _keys;
+    static locale = system_locale;
+    static _translations = {};
+    static _fallback_messages;
+    static _debug = false;
+    static user_defined_messages = {};
 
-
-    cached = {};
-    
-
-    static registers = {
-        types: [
-            "blob",
-            "date",
-            "datetime",
-            "array",
-            "object",
-            "numeric",
-            "integer",
-            "string",
-            "file",
-            "files",
-            "boolean",
-        ],
-        sanitizers: ["trim", "capitalize", "format_date"],
-        fillables: [
-            "if_empty",
-            "fill",
-            "fillable",
-            "nullable",
-            "required",
-            "required_if",
-            "required_unless",
-            "required_with",
-            "required_with_all",
-            "required_without",
-            "required_without_all",
-        ],
-    };
+    static registers = registers;
 
     constructor(data, rules = null, messages = {}, attributes = {}) {
+        FormGuard.user_defined_messages;
+        console.log('testing');
         this.setAttributes(attributes);
         this._errors = {};
         this._hasFile = false;
-        this.translations = locales.translations;
-        this.cached = {};
+        FormGuard._translations = config.locales;
+        FormGuard._debug = config.debug;
         
         this.loadFallbackMessages();
-        this.file_patterns = {
-            image: [/^image\/(png|gif|jpe?g)/],
-            video: [/^video\/(.+?)/],
-            pdf: [/application\/json/],
-            document: [/application\/json/],
-        };
+        this._file_patterns = utils.isPlainObject(config.file_patterns) ? config.file_patterns : {};
+        FormGuard.user_defined_messages = {};
 
         this._skips = [];
-        this.golden_rules = {};
+        this._rules = {};
 
         this._data = { ...data };
 
-        this.setMessages(messages);
+        FormGuard.add(config.customRules);
+        FormGuard.setMessages(messages);
+
         this.parseRules(rules);
     }
 
-    setMessages(messages) {
+    init() {
+        FormGuard.registers = {
+            types: [
+                "blob",
+                "date",
+                "datetime",
+                "array",
+                "object",
+                "numeric",
+                "integer",
+                "string",
+                "file",
+                "files",
+                "boolean",
+            ],
+            stabilizers: ["trim", "capitalize", "format_date"],
+            fillables: [
+                "if_empty",
+                "fill",
+                "fillable",
+                "nullable",
+                "required",
+                "required_if",
+                "required_unless",
+                "required_with",
+                "required_with_all",
+                "required_without",
+                "required_without_all",
+            ],
+        };
+    
 
-        this.user_defined_messages = {};
-        const fb_locale = FormGuard.locale;
+    }
+
+    static log(type, ...args) {
+        if (this._debug && console[type]) {
+            console[type](...args);
+        }
+    }
+
+    static setSystemMessages(messages, name) {
+        this._translations = utils.castObject(this._translations);
+
+        utils.forEach(this._translations, (messages, locale) => {
+            delete this._translations[locale][name];
+        })
+
+        utils.forEach(messages, (message, key) => {
+            const [message_key, locale] = this.getKeys(key);
+            this._translations[locale] = {
+                ...utils.castObject(this._translations[locale]),
+                [message_key]:message
+            }
+        });
+        this._fallback_messages = this._translations[FormGuard.locale]
+    }
+
+    static setMessages(messages) {
+
+        this.user_defined_messages = utils.castObject(this.user_defined_messages);
 
         if (!utils.isPlainObject(messages)) {
             throw new ValidationError(
@@ -82,22 +144,13 @@ export class FormGuard {
             );
         }
 
-        const getKeys = (thing) => {
-            const pattern = /([^$]+)/g;
-            const matched = thing.match(pattern);
-
-            if (!matched || matched.length !== 2) {
-                return [thing, fb_locale];
-            }
-            return matched;
-        };
 
         utils.forEach(messages, (default_message, attr) => {
-            const [message_key, locale] = getKeys(attr);
+            const [message_key, locale] = this.getKeys(attr);
 
-            const fallback = message_key + "$" + fb_locale;
+            const fallback = message_key + "$" + system_locale;
 
-            if (locale !== fb_locale) {
+            if (locale !== system_locale) {
                 if (
                     utils.isUndefined(messages[fallback]) &&
                     utils.isUndefined(messages[message_key])
@@ -106,7 +159,7 @@ export class FormGuard {
                         ...messages,
                         [message_key]: "This is an error Message",
                     };
-                    console.warn(
+                    this.log('warn', 
                         `Default message for "${message_key}" is missing. Defining message for ${message_key} will serve as fallback in case the user language is not available. So ensure it's written in english.\n\nExample:\n${JSON.stringify(
                             example
                         )}`
@@ -141,14 +194,16 @@ export class FormGuard {
     //namePasswordSymbols
     //namePassword
 
-    getUserMessages({attribute, rule, type}, holder) {
+    getUserMessages({attribute, rule, type}, holder, defaultValue) {
         const holderArgs = [attribute, rule, holder].filter(arg => utils.isString(arg));
         const ruleArgs = [attribute, rule];
 
         const getValue = (key) => {
-            const user_defined_messages = this.user_defined_messages[FormGuard.locale] || this.user_defined_messages.en;
+            const user_defined_messages = FormGuard.user_defined_messages[FormGuard.locale] || FormGuard.user_defined_messages.en;
             return user_defined_messages?.[key];
         };
+
+        defaultValue = defaultValue||"validation."+rule;
 
         const matches = [
             this.snakeCase(...holderArgs),
@@ -158,79 +213,25 @@ export class FormGuard {
         ]
         .map(result => getValue(result))
         .find(data => utils.isString(data));
+        
 
         if (matches) {
-            console.log({matches});
+            return matches;
         }
         else {
-            const fallback = utils.objectGet(this.fallback_messages, rule);
+            const fallback = utils.objectGet(FormGuard._fallback_messages, rule);
             if (utils.isString(fallback)) {
                 return fallback;
             }
             else if (utils.isPlainObject(fallback)) {
-                return fallback[holder || type];
+                return fallback[holder || type] || defaultValue;
             }
+
+            return defaultValue;
         }
-
-
-
-        const holder_snakeCase = this.snakeCase(...holderArgs);
-        const rule_snakeCase = this.snakeCase(...ruleArgs);
-
-        const holder_dotted = holderArgs.join('.');
-        const rule_dotted = ruleArgs.join('.');
-
         
-
-
-
-
     }
 
-
-    getUserDefinedMessage(...args) {
-        console.warn(this.user_defined_messages);
-        const getValue = (key) => {
-            const user_defined_messages = this.user_defined_messages[FormGuard.locale] || this.user_defined_messages.en;
-            return user_defined_messages?.[key];
-        }
-        if (!utils.isString('method')) {
-            return getValue(attribute);
-        }
-        const snakeCase = this.snakeCase(...args);
-        const dottedCase = args.join('.');
-
-        const snakes = [];
-
-        for(var i = 0; i < args; i++) {
-            if (i > 0) {
-
-            }
-        }
-
-        console.log({snakeCase, dottedCase});
-
-        return getValue(snakeCase) || getValue(dottedCase);
-    }
-
-    _getUserDefinedMessage(attribute, method) {
-        console.warn(this.user_defined_messages);
-        const getValue = (key) => {
-            const user_defined_messages = this.user_defined_messages[FormGuard.locale] || this.user_defined_messages.en;
-            return user_defined_messages?.[key];
-        }
-        if (!utils.isString('method')) {
-            return getValue(attribute);
-        }
-        const snakeCase = this.snakeCase(attribute, method);
-        const dottedCase = attribute + '.' + method;
-
-        return getValue(snakeCase) || getValue(dottedCase);
-    }
-
-    getFallbackMessage(...keys) {
-        return utils.objectGet(this.fallback_messages, ...keys);
-    }
 
     static setLocale(locale) { 
         FormGuard.locale = locale;
@@ -250,7 +251,7 @@ export class FormGuard {
         this._skips = [];
 
         return new Promise(async (resolve, reject) => {
-            for (const [attribute, data] of Object.entries(this.golden_rules)) {
+            for (const [attribute, data] of Object.entries(this._rules)) {
                 for (const item of data) {
                     const { args, callback } = item;
                     await callback(...args);
@@ -286,7 +287,7 @@ export class FormGuard {
 
             if (utils.isArray(attributes)) {
                 attrs = attributes;
-                const rules = Object.entries(this.golden_rules).filter(
+                const rules = Object.entries(this._rules).filter(
                     ([key]) => attrs.includes(key)
                 );
 
@@ -307,7 +308,7 @@ export class FormGuard {
                 );
             } else if (utils.isPlainObject(attributes)) {
                 attrs = Object.keys(attributes);
-                const rules = Object.entries(this.golden_rules).filter(
+                const rules = Object.entries(this._rules).filter(
                     ([key]) => attrs.includes(key)
                 );
 
@@ -343,15 +344,104 @@ export class FormGuard {
         });
     }
 
+
+    validate(attributes) {
+        attributes = attributes || this.getData();
+        
+        if (utils.isString(attributes)) {
+            attributes = {[attributes]:this._data[attributes]}
+        }
+            else if (!utils.isPlainObject(attributes)) {
+                throw new ValidationError(
+                    `Data should be an object`
+                );
+            }
+
+            return new Promise(async (resolve, reject) => {
+            try {
+                let errors = {};
+                let attrs = [];
+
+                if (utils.isArray(attributes)) {
+                    attrs = attributes;
+                    const rules = Object.entries(this._rules).filter(
+                        ([key]) => attrs.includes(key)
+                    );
+                    for (const [attribute, data] of rules) {
+                        // reset errors
+                        delete this._errors[attribute];
+
+                        
+                        for (const item of data) {
+                            const { args, callback } = item;
+                            await callback(...args);
+                        }
+                    }
+
+                    errors = Object.fromEntries(
+                        Object.entries(this._errors).filter(([key]) =>
+                            attrs.includes(key)
+                        )
+                    );
+                } else if (utils.isPlainObject(attributes)) {
+                    attrs = Object.keys(attributes);
+                    const rules = Object.entries(this._rules).filter(
+                        ([key]) => attrs.includes(key)
+                    );
+
+                    for (const [attribute, data] of rules) {
+                        delete this._errors[attribute];
+                        if (attribute in attributes) {
+                            this._data[attribute] = attributes[attribute];
+                        }
+
+
+                        for (const item of data) {
+                            await item.callback(...item.args);
+                        }
+                    }
+
+                    errors = Object.fromEntries(
+                        Object.entries(this._errors).filter(([key]) =>
+                            attrs.includes(key)
+                        )
+                    );
+                }
+
+                if (Object.keys(errors).length > 0) {
+                    return reject(this._errors);
+                }
+
+                const entries = Object.entries(this._data).filter(([key]) =>
+                    attrs.includes(key)
+                );
+                const validated = Object.fromEntries(entries);
+                const formData = this.convertDataToFormData(validated);
+
+                resolve({ validated, formData });
+                } catch(e) {
+                    FormGuard.log('error', e);
+
+                    let errors = this._errors;
+                    if (utils.isEmpty(errors)) {
+                        errors = {error:'Failed to validate'};
+                    }
+                    
+                    reject(errors);
+                }
+            });
+    }
+
     static async make(data, rules = null, messages = {}, attributes = {}) {
         const validator = new FormGuard(data, rules, messages, attributes);
 
-        return validator.all();
+        return validator.validate();
     }
 
     successfully__passed__validation(obj) {
         if (this.skippedValidation(obj)) return;
-        this.clearError(obj);
+        this.clearErrorMessage(obj);
+        FormGuard.log('info', 'Successfully validated '+obj.attribute)
     }
 
     /**
@@ -368,49 +458,86 @@ export class FormGuard {
      * @method file
      * @method files
      * @method boolean
+     * @method email
+     * @method uuid 
+     * @method ip 
+     * @method url
      *
      */
 
     async blob(obj) {
         const data = this.getData(obj);
-        if (!utils.isBlob(data)) {
-            this.registerError(obj);
-        }
+
+        this.clearIF(utils.isBlob(data), obj)
     }
 
     async date(obj) {
         const data = this.getData(obj);
         if (this.skippedValidation(obj)) return;
         const date = new Date(data);
+        const validated = !isNaN(date.getFullYear());
 
-        if (isNaN(date.getFullYear())) {
-            this.registerError(obj);
-        } else {
-            // this.setData(obj, new Date(date));
-            this.clearError(obj);
+        if (validated) {
+            this.setData(obj, utils.format_date(date, 'yyyy-mm-dd'));
         }
+
+        this.clearIF(validated, obj);
+
     }
 
     async datetime(obj) {
         const data = this.getData(obj);
         if (this.skippedValidation(obj)) return;
         const date = new Date(data);
+        const validated = !isNaN(date.getSeconds());
 
-        if (isNaN(date.getSeconds())) {
-            this.registerError(obj);
-        } else {
-            // this.setData(obj, new Date(date));
-            this.clearError(obj);
+        if (validated) {
+            this.setData(obj, utils.format_date(date, 'yyyy-mm-dd H:i:s'));
         }
+
+        this.clearIF(validated, obj);
+
+    }
+
+    async time(obj) {
+        const data = this.getData(obj);
+        if (this.skippedValidation(obj)) return;
+        const date = new Date(data);
+        const validated = !isNaN(date.getHours());
+
+        if (validated) {
+            this.setData(obj, utils.format_date(date, 'H:i:s'));
+        }
+
+        this.clearIF(validated, obj);
+
+    }
+
+
+    async timestamp(obj) {
+        let validated = false;
+        try {
+            const data = this.getData(obj);
+            const time = Date.parse(data);
+            validated = !isNaN(time);
+
+            if (validated) {
+                return this.setData(obj, time);
+            }
+
+        } catch(e) {};
+
+        this.clearIF(
+            validated,
+            obj
+        );
     }
 
     async array(obj) {
         if (this.skippedValidation(obj)) return;
 
-        if (!utils.isArray(this.getData(obj))) {
-            return this.registerError(obj);
-        }
-        this.clearError(obj);
+        this.clearIF(utils.isArray(this.getData(obj)), obj);
+        
     }
 
     async numeric(obj) {
@@ -419,12 +546,14 @@ export class FormGuard {
         const data = this.getData(obj);
         const num = utils.isNumeric(data);
 
-        if (!num) {
-            return this.registerError(obj);
+        this.clearIF(
+            num,
+            obj
+        );
+        if (num) {
+            this.setData(obj, num);
         }
-        this.setData(obj, num);
 
-        this.clearError(obj);
     }
 
     async integer(obj) {
@@ -433,22 +562,29 @@ export class FormGuard {
         const data = this.getData(obj);
         const intData = utils.isInteger(data);
 
-        if (!intData) {
-            return this.registerError(obj);
+        this.clearIF(
+            intData,
+            obj
+        );
+        if (intData) {
+            this.setData(obj, intData);
         }
-        this.setData(obj, intData);
 
-        this.clearError(obj);
     }
 
     async string(obj) {
         if (this.skippedValidation(obj)) return;
+        let data = this.getData(obj);
 
-        if (!utils.isString(this.getData(obj))) {
-            this.registerError(obj);
-        } else {
-            this.clearError(obj);
+        if (utils.isNumber(data)) {
+            data = `${data}`;
         }
+
+        this.clearIF(
+            utils.isString(data),
+            obj
+        );
+        this.setData(obj, data);
     }
 
     matchFile(file, types) {
@@ -466,7 +602,7 @@ export class FormGuard {
         };
 
         return types.some((type) => {
-            const patterns = this.file_patterns[type];
+            const patterns = this._file_patterns[type];
 
             if (utils.isArray(patterns)) {
                 return patterns.some((pattern) => {
@@ -493,7 +629,7 @@ export class FormGuard {
             const file = data[data.length - 1];
 
             if (hasAttr && !this.matchFile(data, types)) {
-                return this.registerError(
+                return this.loadErrorMessage(
                     obj,
                     `File must be either ${utils.join(types, ", ", " or ")}`
                 );
@@ -502,7 +638,7 @@ export class FormGuard {
             this.setData(obj, file);
         } else if (utils.isFile(data) || utils.isFileList(data)) {
             if (hasAttr && !this.matchFile(data, types)) {
-                return this.registerError(
+                return this.loadErrorMessage(
                     obj,
                     `File must be either ${utils.join(types, ", ", " or ")}`
                 );
@@ -511,10 +647,10 @@ export class FormGuard {
             if (utils.isFileList(data) && data.length > 0) {
                 this.setData(obj, data[data.length - 1]);
             }
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
 
-        this.registerError(obj);
+        this.loadErrorMessage(obj);
     }
 
     isFile(data) {
@@ -539,27 +675,77 @@ export class FormGuard {
 
         if (this.isFile(data)) {
             if (hasAttr && !this.matchFile(data, types)) {
-                return this.registerError(
+                return this.loadErrorMessage(
                     obj,
                     `File must be either ${utils.join(types, ", ", " or ")}`
                 );
             }
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
 
-        this.registerError(obj);
+        this.loadErrorMessage(obj);
     }
 
     async boolean(obj) {
         let value = this.getData(obj);
         if (!utils.isBoolean(value)) {
-            this.registerError(obj);
+            this.loadErrorMessage(obj);
         }
+    }
+
+    
+    async email(obj) {
+        if (this.skippedValidation(obj)) return;
+
+        const data = this.getData(obj);
+       
+        this.clearIF(
+            utils.isEmail(data),
+            obj
+        );
+    }
+
+
+    async uuid(obj) {
+        const data = this.getData(obj);
+        if (this.skippedValidation(obj)) return;
+
+        const validated = utils.isString(data) && utils.isUuid(data);
+
+        this.clearIF(
+            validated,
+            obj
+        );
+       
+    }
+
+    async url(obj) {
+        const data = this.getData(obj);
+        if (this.skippedValidation(obj)) return;
+        let validated = utils.isUrl(data);
+        
+        this.clearIF(
+            validated,
+            obj
+        );
+
+    }
+
+    async ip(obj) {
+        const data = this.getData(obj);
+        if (this.skippedValidation(obj)) return;
+        
+        const validated = utils.isIpAddress(data);
+
+        this.clearIF(
+            validated,
+            obj
+        );
     }
 
     /**
      *
-     * SANITIZERS
+     * STABILIZERS
      * @method trim
      * @method capitalize
      * @method format_date
@@ -569,6 +755,9 @@ export class FormGuard {
 
         if (utils.isString(value)) {
             this.setData(obj, utils.trim(value));
+        }
+        else {
+            this.setData(obj, utils.recursiveTrim(value));
         }
     }
 
@@ -593,85 +782,12 @@ export class FormGuard {
                 "format_date after declaring date, datetime or time type"
             );
         }
-        const placeholders = {
-            date: "yyyy-mm-dd",
-            datetime: "yyyy-mm-dd h:i:s a",
-            time: "h:i:s a",
-        };
 
-        if (!utils.isString(format)) {
-            format = placeholders[obj.type];
+        const formatted = utils.format_date(this.getData(obj), format, obj.type);
+        if (formatted) {
+            this.setData(obj, formatted);
         }
-
-        if (obj.type !== "date") {
-            this.date(obj);
-        }
-
-        const date = new Date(this.getData(obj));
-
-        const padZero = (n) => (n < 10 ? `0${n}` : n);
-
-        const yyyy = date.getFullYear();
-        const mm = padZero(date.getMonth() + 1);
-        const dd = padZero(date.getDate());
-        const hours = date.getHours();
-        let a = "am";
-        let A = "AM";
-        let h = hours;
-
-        if (h > 12) {
-            h -= 12;
-            a = "pm";
-            A = "PM";
-        }
-        h = padZero(h);
-        const H = padZero(hours);
-        const s = date.getSeconds();
-        const pattern = /([a-zA-Z]+)/g;
-
-        const dateObj = {
-            yyyy,
-            YYYY: yyyy,
-            mm,
-            MM: mm,
-            s,
-            S: s,
-            h,
-            H,
-            a,
-            A,
-            dd,
-            DD: dd,
-        };
-
-        const m = format.match(pattern);
-
-        const splitPlaceholder = placeholders[obj.type].match(pattern);
-
-        const invalidFormats = m.filter(
-            (item) =>
-                !splitPlaceholder.includes(item.toLowerCase()) ||
-                !(item in dateObj)
-        );
-
-        if (invalidFormats.length > 0) {
-            throw new ValidationError(
-                `The format provided contains ${invalidFormats.join(
-                    ","
-                )} which is not supported. \nUse "${placeholders[obj.type]}"`
-            );
-        }
-
-        if (m) {
-            const formatted = format.replace(pattern, (_, $1) =>
-                $1 in dateObj ? dateObj[$1] : $1
-            );
-            const matched = m.filter((item) => item in dateObj);
-
-            if (matched.length === m.length) {
-                this.setData(obj, formatted);
-            }
-        }
+        
     }
 
     /**
@@ -703,7 +819,7 @@ export class FormGuard {
 
         const value = this.getData(obj);
 
-        if (utils.isString(value) && utils.trim(value) === "") {
+        if (utils.isEmpty(value)) {
             this.setData(obj, initial);
         }
     }
@@ -722,7 +838,7 @@ export class FormGuard {
         ];
 
         if (matcher.some((item) => item === true)) {
-            this.registerError(obj);
+            this.loadErrorMessage(obj);
         }
     }
 
@@ -737,12 +853,11 @@ export class FormGuard {
 
     async required(obj) {
         const data = this.getData(obj);
-
         if (
             (utils.isFile(data) && obj.type === "file") ||
             (utils.isFileList(data) && obj.type === "files")
         ) {
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
 
         const matcher = [
@@ -754,15 +869,15 @@ export class FormGuard {
         ];
 
         if (matcher.some((item) => item === true)) {
-            this.registerError(obj);
+            this.loadErrorMessage(obj);
         }
     }
 
     async required_if(obj, other, value) {
         if (!this.getData(obj) && this._data[other] !== value) {
-            this.registerError({ ...obj, other, value });
+            this.loadErrorMessage({ ...obj, other, value });
         } else {
-            this.clearError(obj);
+            this.clearErrorMessage(obj);
         }
     }
 
@@ -771,10 +886,10 @@ export class FormGuard {
         const otherValue = this._data[other];
 
         if (value && values.includes(otherValue)) {
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
 
-        this.registerError({ ...obj, other, values: values.join(",") });
+        this.loadErrorMessage({ ...obj, other, values: values.join(",") });
     }
 
     async required_with(obj, ...values) {
@@ -783,9 +898,9 @@ export class FormGuard {
         const valueData = required_files.map((item) => this._data[item]);
 
         if (value && valueData.some((item) => !this.empty(item))) {
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
-        this.registerError({ ...obj, values: values.join(",") });
+        this.loadErrorMessage({ ...obj, values: values.join(",") });
     }
 
     async required_with_all(obj, ...values) {
@@ -793,7 +908,7 @@ export class FormGuard {
         const data = required_files.map((item) => this._data[item]);
 
         if (data.some((item) => this.empty(item))) {
-            this.registerError({ ...obj, values: values.join(",") });
+            this.loadErrorMessage({ ...obj, values: values.join(",") });
         }
     }
 
@@ -802,7 +917,7 @@ export class FormGuard {
         const data = required_files.map((item) => this._data[item]);
 
         if (data.every((item) => this.empty(item))) {
-            this.registerError({ ...obj, values: values.join(",") });
+            this.loadErrorMessage({ ...obj, values: values.join(",") });
         }
     }
 
@@ -811,7 +926,7 @@ export class FormGuard {
         const valudData = values.map((item) => this._data[item]);
 
         if (!value && valudData.some((item) => this.empty(item))) {
-            this.registerError({ ...obj, values: values.join(",") });
+            this.loadErrorMessage({ ...obj, values: values.join(",") });
         }
     }
 
@@ -836,7 +951,7 @@ export class FormGuard {
 
     accepted(obj) {
         if (!this.getData(obj)) {
-            this.registerError(obj);
+            this.loadErrorMessage(obj);
         }
     }
 
@@ -856,49 +971,47 @@ export class FormGuard {
 
     async password(obj) {
         const data = this.getData(obj) ?? "";
-        // const s
+        const patterns = {
+            letters: [/[a-zA-Z]/],
+            mixed: [/[a-z]/, /[A-Z]/],
+            numbers: [/[0-9]/],
+            symbols: [/[!@#$^&*()_+<>?\/\\,.+|{}%-`~]/]
+        };
 
-        console.warn(this.getUserDefinedMessage(obj.attribute, "password"));
+        for(const [key, pattern] of Object.entries(patterns)) {
+            if (pattern.some(p => !p.test(data))) {
+                return this.loadErrorMessage(
+                    obj,
+                    this.getUserMessages(obj, key)
+                )
+            }
+        }
+        return this.clearErrorMessage(obj)
 
         if (!/[a-zA-Z]/.test(data)) {
-            this.registerError(
+            this.loadErrorMessage(
                 obj,
-                this.getUserMessages(obj, 'letters') ||
-                this.getUserDefinedMessage(obj.attribute, "password", "letters") ||
-                this.getUserDefinedMessage(obj.attribute, "password") ||
-                    this.getFallbackMessage("password", "letters")
+                this.getUserMessages(obj, 'letters')
             );
         } else if (!/[a-z]/.test(data) || !/[A-Z]/.test(data)) {
-            this.registerError(
+            this.loadErrorMessage(
                 obj,
-                this.getUserMessages(obj, 'mixed') ||
-                this.getUserDefinedMessage(obj.attribute, "password", "mixed") ||
-                this.getUserDefinedMessage(obj.attribute, "password") ||
-                    this.getFallbackMessage("password", "mixed")
+                this.getUserMessages(obj, 'mixed')
             );
-        } else if (!/[0-9]/.test(data) || !/[A-Z]/.test(data)) {
-            this.registerError(
+        } else if (!/[0-9]/.test(data)) {
+            this.loadErrorMessage(
                 obj,
-                this.getUserMessages(obj, 'numbers') ||
-                this.getUserDefinedMessage(obj.attribute, "password", "numbers") ||
-                this.getUserDefinedMessage(obj.attribute, "password") ||
-                    this.getFallbackMessage("password", "numbers")
+                this.getUserMessages(obj, 'numbers')
             );
         } else if (!/[!@#$^&*()_+<>?\/\\,.+|{}%-`~]/.test(data)) {
-            this.registerError(
+            this.loadErrorMessage(
                 obj,
-                this.getUserMessages(obj, 'symbols') ||
-                this.getUserDefinedMessage(obj.attribute, "password","symbols") ||
-                    this.getUserDefinedMessage(obj.attribute, "password") ||
-                    this.getFallbackMessage("password", "symbols")
+                this.getUserMessages(obj, 'symbols')
             );
         } else if (data.length < 8) {
-            this.registerError(
+            this.loadErrorMessage(
                 { ...obj, length: 8 },
-                this.getUserMessages(obj, 'letters') ||
-                this.getUserDefinedMessage(obj.attribute, "password","length") ||
-                    this.getUserDefinedMessage(obj.attribute, "password") ||
-                    this.getFallbackMessage("password", "length")
+                this.getUserMessages(obj, 'length')
             );
         }
     }
@@ -930,9 +1043,9 @@ export class FormGuard {
 
     clearIF(validated, obj, errorMessage) {
         if (validated) {
-            return this.clearError(obj);
+            return this.clearErrorMessage(obj);
         }
-        this.registerError(obj, errorMessage);
+        this.loadErrorMessage(obj, errorMessage);
     }
 
     /**
@@ -949,13 +1062,13 @@ export class FormGuard {
      * name: ['string', 'alpha_underscore', ...]
      */
 
-    alpha_underscore(obj, min, max) {
+    alpha_underscore(obj) {
         if (this.skippedValidation(obj)) return;
 
         this.trim(obj);
         const data = this.getData(obj);
-
-        this.clearIF(utils.isString(data) && /^[a-zA-Z_]$/.test(data), obj)
+        
+        this.clearIF(utils.isString(data) && /^[a-zA-Z_]+$/.test(data), obj)
     }
 
     /**
@@ -1027,6 +1140,28 @@ export class FormGuard {
         this.clearIF(utils.isString(data) && /^[a-zA-Z\s]+$/.test(data), obj)
     }
 
+    getSize(obj) {
+        const data = this.getData(obj);
+
+        if (obj.type === 'numeric') {
+            return [data]; 
+        }
+        else if (obj.type === 'files') {
+            return data.map(file => file.size);
+        }
+        else if (obj.type === 'file') {
+            return [
+                data.size
+            ];
+        }
+        else if (obj.type === 'string' || obj.type === 'array') {
+            return [
+                data.length
+            ];
+        }
+        return 0;
+    }
+
     /**
      *
      * Ensures a value is between a minimum and maximum range.
@@ -1050,28 +1185,27 @@ export class FormGuard {
         max = this.parseInt(max);
         const data = this.getData(obj);
 
-
         min = Math.min(max, min);
         max = Math.max(max, min);
 
-        let error = false;
-        if (obj.type === 'numeric') {
-            error = data < min || data > max;
-        }
-        else if (obj.type === 'string' || obj.type === 'array') {
-            error = data.length < min || data.length > max;
-        }
-        else if (obj.type === 'files') {
-            error = data.some(file => file.size < min || file.size > max);
-        }
-        else if (obj.type === 'file') {
-            error = data.size < min || file.size > max;
-        }
+        const patterns = {
+            numeric: (data) => data < min || data > max,
+            string: (data) => data.length < min || data > max,
+            array: (data) => data.length < min || data > max,
+            files: (data) => data.some(file => file.size < min || file.size > max),
+            file: (data) => data.size < min || data.size > max
+        };
 
+        const fnc = patterns[obj.type];
+        let validated = false;
+
+        if (utils.isFunction(fnc)) {
+            validated = !fnc(data);
+        }
         this.clearIF(
-            !error, 
+            validated, 
             {...obj, min, max},
-            this.getUserDefinedMessage(obj.attribute, 'between') || this.getFallbackMessage(obj.rule, obj.type)
+            this.getUserMessages(obj)
         );
 
     }
@@ -1090,17 +1224,17 @@ export class FormGuard {
      * terms: ['confirmed', ...]
      */
 
-    async confirmed(obj, other) {
+    async confirmed(obj) {
         if (this.skippedValidation(obj)) return;
+        let other = arguments.length > 1 ? arguments[1] : obj.attribute + '_confirmation';
 
-        other = utils.isString(other) ? other : obj.attribute + "_confirmation";
+        const validated = utils.isString(other) && this.getData(obj) === this._data[other];
 
-        if (this.getData(obj) !== this._data[other]) {
+        
+
+        if (!validated) {
             this._skips.push(other);
-
-            this._errors[other] = this.getUserDefinedMessage(obj.attribute, "confirmed") || 
-                this.getFallbackMessage("confirmed") ||
-                'validation.confirmed';
+            this._errors[other] = this.getUserMessages(obj);
         }
     }
 
@@ -1117,6 +1251,8 @@ export class FormGuard {
      * or
      * name: ['contains:bright', ...]
      */
+
+    
 
     async contains(obj, value) {
         if (this.skippedValidation(obj)) return;
@@ -1266,29 +1402,6 @@ export class FormGuard {
         );
     }
 
-    /**
-     * Ensures that the provided data is a valid email address
-     *
-     * @usage
-     * email: 'email|...'
-     *
-     * or
-     * email: {email:true, }
-     *
-     * or
-     * email: ['email', ...]
-     */
-
-    async email(obj) {
-        if (this.skippedValidation(obj)) return;
-
-        const data = this.getData(obj);
-       
-        this.clearIF(
-            /.+@.+\..+/.test(data),
-            obj
-        );
-    }
 
     /**
      *
@@ -1379,34 +1492,33 @@ export class FormGuard {
 
 
 
+
+
     async max(obj, max) {
         max = parseInt(max);
         const data = this.getData(obj);
 
         if (this.skippedValidation(obj)) return;
 
-        let error = false;
-        switch (obj.type) {
-            case "numeric":
-                error = data >= max;
-                break;
-            case "file":
-                error = data.size >= max;
-                break;
-            case "files":
-                error = Array.from(data).some((file) => file.size >= max);
-                break;
-            case "string":
-            case "array":
-                error = data.length >= max;
-                break;
+        const patterns = {
+            numeric: (data) => data >= max,
+            string: (data) => data.length >= max,
+            array: (data) => data.length >= max,
+            files: (data) => data.some(file => file.size >= max),
+            file: (data) => data.size >= max
+        };
+
+        const fnc = patterns[obj.type];
+        let validated = false;
+
+        if (utils.isFunction(fnc)) {
+            validated = !fnc(data);
         }
 
         this.clearIF(
-            !error,
-            {...obj, max},
-            this.getUserDefinedMessage(obj.attribute, 'max') ||
-            this.getFallbackMessage('max', obj.type)
+            validated, 
+            {...obj, min, max},
+            this.getUserMessages(obj)
         );
 
     }
@@ -1441,32 +1553,28 @@ export class FormGuard {
     async min(obj, min) {
         if (this.skippedValidation(obj)) return;
 
-        min = parseInt(min);
+        min = this.parseInt(min);
         const data = this.getData(obj);
 
+        const patterns = {
+            numeric: (data) => data < max,
+            string: (data) => data.length < max,
+            array: (data) => data.length < max,
+            files: (data) => data.some(file => file.size < max),
+            file: (data) => data.size < max
+        };
 
-        let error = false;
-        switch (obj.type) {
-            case "numeric":
-                error = data < min;
-                break;
-            case "file":
-                error = data.size < min;
-                break;
-            case "files":
-                error = Array.from(data).some((file) => file.size < min);
-                break;
-            case "string":
-            case "array":
-                error = data.length < min;
-                break;
+        const fnc = patterns[obj.type];
+        let validated = false;
+
+        if (utils.isFunction(fnc)) {
+            validated = !fnc(data);
         }
 
         this.clearIF(
-            !error,
-            { ...obj, min },
-            this.getUserDefinedMessage(obj.attribute, 'min') ||
-            this.getFallbackMessage('min', obj.type)
+            validated, 
+            {...obj, min, max},
+            this.getUserMessages(obj)
         );
 
     }
@@ -1527,9 +1635,10 @@ export class FormGuard {
 
 
     async range(obj, min, max) {
-        min = parseFloat(min);
-        max = parseFloat(max);
+        min = this.parseInt(min);
+        max = this.parseInt(max);
         const data = this.getData(obj);
+
         if (this.skippedValidation(obj)) return;
 
         const validated = utils.isNumber(data) && data >= min && data <= max;
@@ -1620,60 +1729,13 @@ export class FormGuard {
         );
     }
 
-    async uuid(obj) {
-        const data = this.getData(obj);
-        if (this.skippedValidation(obj)) return;
-
-        const uuidRegex =
-            /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-        const validated = utils.isString(data) && uuidRegex.test(data);
-
-        this.clearIF(
-            validated,
-            obj
-        );
-       
-    }
-
-    async url(obj) {
-        const data = this.getData(obj);
-        if (this.skippedValidation(obj)) return;
-        let validated = false;
-
-        try {
-            new URL(data);
-            validated = true;
-        } catch (_) {}
-        
-        this.clearIF(
-            validated,
-            obj
-        );
-
-    }
-
-    async ip(obj) {
-        const data = this.getData(obj);
-        if (this.skippedValidation(obj)) return;
-
-        const ipRegex =
-            /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-        
-        const validated = ipRegex.test(data);
-
-        this.clearIF(
-            validated,
-            obj
-        );
-    }
+    
 
 
     async gt(obj, gt) {
-        gt = parseInt(gt);
-        const data = this.getData(obj);
-
         if (this.skippedValidation(obj)) return;
+        gt = this.parseInt(gt, `gt argument expects a number but ${typeof gt} was provided`);
+        const data = this.getData(obj);
 
         let error = false;
         switch (obj.type) {
@@ -1689,11 +1751,11 @@ export class FormGuard {
                 break;
         }
 
+        
         this.clearIF(
             !error,
             {...obj, gt},
-            this.getUserDefinedMessage(obj.attribute, 'gt') ||
-            this.getFallbackMessage('gt', obj.type)
+            this.getUserMessages(obj)
         );
 
     }
@@ -1721,8 +1783,7 @@ export class FormGuard {
         this.clearIF(
             !error,
             {...obj, gte},
-            this.getUserDefinedMessage(obj.attribute, 'gte') ||
-            this.getFallbackMessage('gte', obj.type)
+            this.getUserMessages(obj)
         );
     }
 
@@ -1749,8 +1810,7 @@ export class FormGuard {
         this.clearIF(
             !error,
             {...obj, lt},
-            this.getUserDefinedMessage(obj.attribute, 'lt') ||
-            this.getFallbackMessage('lt', obj.type)
+            this.getUserMessages(obj)
         );
     }
 
@@ -1777,17 +1837,24 @@ export class FormGuard {
         this.clearIF(
             !error,
             {...obj, lte},
-            this.getUserDefinedMessage(obj.attribute, 'lte') ||
-            this.getFallbackMessage('lte', obj.type)
+            this.getUserMessages(obj)
         );
     }
 
     async active_url(obj) {
-        let validated = false;
-        try {
-            await fetch(this.getData(obj));
-            validated = true;
-        } catch (e) {}
+        const data = this.getData(obj);
+
+        if (this.skippedValidation(obj)) return;
+
+        let validated = utils.isString(data) && /^https?:\/\//.test(data);
+
+        if (validated) {
+            validated = false;
+            try {
+                await fetch(this.getData(obj));
+                validated = true;
+            } catch (e) {}
+        }
 
         this.clearIF(
             validated, 
@@ -1795,16 +1862,16 @@ export class FormGuard {
         );
     }
 
-    parseInt(...str) {
-        if (utils.isNumber(str[0])) {
+    parseInt(num, message) {
+        if (utils.isNumber(num)) {
             return str;
         }
 
-        const parsed = parseInt(...str);
+        const parsed = parseInt(num);
 
         if (isNaN(parsed)) {
             throw new ValidationError(
-                `Number type was expected but ${typeof str[0]} was provided`
+                message || `Number type was expected but ${typeof num} was provided`
             )
         }
 
@@ -1830,7 +1897,7 @@ export class FormGuard {
 
         const data = this.getData(obj);
 
-        const isImage = (type) => this.file_patterns.image.some(pattern => pattern.test(type));
+        const isImage = (type) => this._file_patterns.image.some(pattern => pattern.test(type));
 
         if (["file", "files"].includes(obj.type)) {
             const fileIsImage = utils.isFile(data) && isImage(data.type);
@@ -1850,7 +1917,7 @@ export class FormGuard {
 
         const data = this.getData(obj);
 
-        const isAudio = (type) => this.file_patterns.audio.some(pattern => pattern.test(type));
+        const isAudio = (type) => this._file_patterns.audio.some(pattern => pattern.test(type));
 
         if (["file", "files"].includes(obj.type)) {
             const fileIsAudio = utils.isFile(data) && isAudio(data.type);
@@ -1870,7 +1937,7 @@ export class FormGuard {
 
         const data = this.getData(obj);
 
-        const isVideo = (type) => this.file_patterns.video.some(pattern => pattern.test(type));
+        const isVideo = (type) => this._file_patterns.video.some(pattern => pattern.test(type));
 
         if (["file", "files"].includes(obj.type)) {
             const fileIsVideo = utils.isFile(data) && isVideo(data.type);
@@ -1894,6 +1961,9 @@ export class FormGuard {
         const indicators = {
             z: /^[a-z]$/,
             Z: /^[A-Z]$/,
+            a: /^[a-z]$/,
+            A: /^[A-Z]$/,
+            0: /^[0-9]$/,
             9: /^[0-9]$/,
             "*": /^[a-zA-Z0-9]$/,
         };
@@ -1926,60 +1996,7 @@ export class FormGuard {
 
     }
 
-    /**
-     *  ADD CUSTOM RULES
-     * ---------------------------------
-     *  addCustomRules({
-     *      unique: ({value, fail}) => fail('not unique'),
-     *      exists: ({value, fail}) => fail('not existing')
-     *  })
-     *
-     **/
-
-    static addCustomRules(rules, messages = {}, registry = null) {
-        let message;
-        if (!utils.isPlainObject(messages)) {
-            throw new ValidationError(
-                `Custom Messages must be an object but ${
-                    messages === null ? "null" : typeof messages
-                } was provided`
-            );
-        }
-        if (!utils.isPlainObject(rules)) {
-            throw new ValidationError(
-                `Custom validation Rules must be an object, but ${
-                    rules === null ? "null" : typeof rules
-                } provided`
-            );
-        }
-        for (const [key, callback] of Object.entries(rules)) {
-            if (utils.isFunction(callback)) {
-                this[key] = callback;
-
-                if (utils.isString(registry) && FormGuard.registers[registry]) {
-                    const entries = Object.entries(FormGuard.registers).map(
-                        (reg, items) => [
-                            reg,
-                            items.filter((item) => key !== item),
-                        ]
-                    );
-                    FormGuard.registers = Object.fromEntries(entries);
-
-                    FormGuard.registers[registry].push(key);
-                }
-
-                if (messages[key]) {
-                    this.user_defined_messages[key] = messages[key];
-                }
-            } else {
-                console.error(
-                    `Custom Rule not added. The custom rule must be a function but ${typeof callback} provided`
-                );
-            }
-        }
-
-        return this;
-    }
+    
 
     hasFile() {
         return this._hasFile;
@@ -2046,16 +2063,27 @@ export class FormGuard {
      * Infers the type of the data (e.g., array, object, numeric, file, etc.)
      *
      * @param {*} data
-     * @returns
+     * @returns {String}
      */
 
     detectType(data) {
-        if (utils.isArray(data)) return "array";
+        if (utils.isArray(data)) return data.every(item => utils.isFile(item)) ? "files":"array";
+        else if (utils.isBlob(data)) return "blob";
         else if (utils.isPlainObject(data)) return "object";
         else if (utils.isNumber(data)) return "numeric";
+        else if (utils.isBoolean(data)) return "boolean";
         else if (utils.isFile(data)) return "file";
         else if (utils.isFileList(data)) return "files";
         else if (utils.isString(data)) return "string";
+        else {
+            const date = new Date(data);
+            if (!isNaN(date.getFullYear())) return 'date';
+            try {
+                let d = JSON.parse(data);
+                if (utils.isArray(d) || utils.isObject(d)) return 'json';
+                return typeof d;
+            } catch(e){}
+        }
         return "any";
     }
 
@@ -2072,8 +2100,8 @@ export class FormGuard {
         const order = utils.memorize(() => {
             const Pattern = (arr) => new RegExp(`^(${arr.join("|")})$`);
             const patterns = {
-                datatypes: Pattern(FormGuard.registers.types),
-                sanitizers: Pattern(FormGuard.registers.sanitizers),
+                types: Pattern(FormGuard.registers.types),
+                stabilizers: Pattern(FormGuard.registers.stabilizers),
                 fillables: Pattern(FormGuard.registers.fillables),
             };
     
@@ -2089,15 +2117,13 @@ export class FormGuard {
     
                 return this.orderRules(attribute, rules);
             }
-    
-            if (!utils.isPlainObject(input)) {
-                console.error("Input must be an array or an object");
-                return;
+            else if (utils.isArray(input)) {
+                if (input.some(item => utils.isString(item) && item.indexOf(':') > 0)) {
+                    input = this.arrayToObject(input);
+                }                        
             }
-            if (Object.keys(input).length === 0) {
-                console.error("Validation rule was not provided");
-                return;
-            }
+
+
     
             const categorized = this.categorizeRules(input, patterns);
     
@@ -2112,10 +2138,33 @@ export class FormGuard {
         
     }
 
+    arrayToObject(input) {
+        const obj = {};
+
+        input.forEach(item => {
+            if (utils.isFunction(item)) {
+            
+                let name = item.name || 'anonymous';
+                obj[name] = item;
+            }
+            else if (utils.isString(item)) {
+                const splt = item.split(":");
+                let name = splt[0];
+                let args = true;
+
+                if (splt.length > 1) {
+                    args = splt[1].split(',').map(utils.normalize);
+                }
+                obj[name] = args;              
+            }
+        });
+        return obj;
+    }
+
     categorizeRules(input, patterns) {
         const categorized = {
-            datatypes: [],
-            sanitizers: [],
+            types: [],
+            stabilizers: [],
             fillables: [],
             others: [],
         };
@@ -2138,11 +2187,11 @@ export class FormGuard {
     createOrderedArray(categorized) {
         let order = [];
 
-        ["fillables", "datatypes", "sanitizers"].forEach((key) => {
+        ["fillables", "types", "stabilizers"].forEach((key) => {
             if (categorized[key] && categorized[key].length > 0) {
                 order.push(
-                    key === "sanitizers"
-                        ? categorized.sanitizers[0]
+                    key === "stabilizers"
+                        ? categorized.stabilizers[0]
                         : categorized[key][0]
                 );
             }
@@ -2158,7 +2207,7 @@ export class FormGuard {
     createOrderedObject(categorized, input) {
         const orders = {};
 
-        ["fillables", "datatypes", "sanitizers"].forEach((order) => {
+        ["fillables", "types", "stabilizers"].forEach((order) => {
             const item = categorized[order].map((key) => [
                 key,
                 input[key] || true,
@@ -2168,7 +2217,7 @@ export class FormGuard {
                 Object.assign(
                     orders,
                     Object.fromEntries(
-                        order === "sanitizers" ? item : [item[0]]
+                        order === "stabilizers" ? item : [item[0]]
                     )
                 );
             }
@@ -2183,22 +2232,26 @@ export class FormGuard {
         };
     }
 
-    appendRule(attribute, rule, callback, args) {
-        const [method, arg] = args;
+    appendRule(attribute, rule, callback, methodArgs) {
+        const [method, arg] = methodArgs;
+        const args = methodArgs;
         if (method === 'fill' && arg.length > 0) {
             return this.setData({attribute}, arg[0]);
         }
-        if (!(attribute in this.golden_rules)) {
-            this.golden_rules[attribute] = [];
+        if (!(attribute in this._rules)) {
+            this._rules[attribute] = [];
         }
         if (rule.length === 0) {
             rule = "custom";
         }
 
-        this.golden_rules[attribute].push({
+
+        this._rules[attribute].push({
             rule,
             callback,
+            methodArgs,
             args,
+            arg
         });
     }
 
@@ -2251,8 +2304,9 @@ export class FormGuard {
         } else if (utils.isPlainObject(rule)) {
             for (const [method, args] of Object.entries(rule)) {
                 if (utils.isFunction(args)) {
-                    this.addCustomRules({ [method]: args });
+                    // FormGuard.addCustomRules({ [method]: args });
                 }
+
 
                 this.appendRule(attribute, method, processItem, [method, args]);
             }
@@ -2293,53 +2347,65 @@ export class FormGuard {
             [rule, args] = method.split(":");
             args = args.split(",");
         } else if (utils.isFunction(method)) {
-            rule = method.name;
+
+            rule = method.name || 'anonymous';
         }
+
 
         let message = `validation.${
             rule || "custom" + (utils.isFunction(method) ? "Callback" : "Rule")
         }`;
 
-        const errorMessage = () => {
+        const errorMessage = (msg) => {
             if (!utils.isString(rule)) {
                 return message;
             }
-            return (
-                this.getUserDefinedMessage(attribute, rule)  ||
-                (utils.isString(this.getFallbackMessage(rule))
-                    ? this.getFallbackMessage(rule)
-                    : message)
-            );
+            return this.getUserMessages({attribute, type, rule}, null, msg || message);
         };
+
+        let parameters = [];
+        
+        if (utils.isArray(args)) {
+            parameters = args.map(utils.normalize);
+        }
 
         const apply_callback = async (fnc, message) => {
             try {
-                const response = await fnc({
-                    request: this._data,
-                    self: {
-                        data: this._data[attribute],
-                        error: this._errors[attribute],
-                    },
+                let response = await fnc({
+                    query: this._data,
                     value: this._data[attribute],
+                    parameters,
                     message,
+                    type,
                     attribute,
                     fail,
                 });
 
-                if (response === false || utils.isString(response)) {
+
+                if (utils.isPlainObject(response) && utils.isString(response[FormGuard.locale])) {
+                    throw new KnownError(response[FormGuard.locale]);
+                }
+
+                else if (response === false || utils.isString(response)) {
                     throw new KnownError(response || errorMessage());
                 }
+
                 return response;
             } catch (err) {
-                this._errors[attribute] = message;
+                this._errors[attribute] = errorMessage();
 
-                if (utils.isKnownError(err) && utils.isString(err.message)) {
-                    this._errors[attribute] = err.message;
-                } else if (utils.isValidationError(err)) {
-                    throw new ValidationError(err.message);
-                } else {
-                    this._errors[attribute] = errorMessage();
+                if (err instanceof KnownError) {
+                    if (utils.isString(err.message)) {
+                        this._errors[attribute] = errorMessage(err.message);
+                    }
+                    if (utils.isPlainObject(err.message) && utils.isString(err.message[FormGuard.locale])) {
+                        this._errors[attribute] = errorMessage(err.message[FormGuard.locale]);
+                    }
                 }
+                
+                else if (err instanceof ValidationError) {
+                    throw new ValidationError(err.message);
+                } 
             }
         };
 
@@ -2368,35 +2434,33 @@ export class FormGuard {
                 let matched = false;
 
                 if (utils.isFunction(FormGuard[rule])) {
-                    message =
-                        this.getUserDefinedMessage(attribute, rule) ||
-                        this.getFallbackMessage(rule) ||
-                        "validation." + rule;
-
+                    message = this.getUserMessages({attribute, rule, type});
+                    
                     await apply_callback(FormGuard[rule], message);
                     matched = true;
                 }
                 if (!matched) {
-                    console.warn(`'Validation Rule "${rule}" is not valid`);
+                    FormGuard.log("warn", `Validation Rule "${rule}" is not valid`);
                 }
             }
-        } catch (e) {
-            let message;
-            if (utils.isObject(e)) {
-                message = e;
+            else {
+                FormGuard.log("warn", `Validation Rule "${rule}" is not defined`);
+
             }
-            throw new ValidationError(
-                message || 'An error occurred'
-            );
+        } catch (e) {
+            if (FormGuard._debug) {
+                console.error(e);
+                throw e;
+            }
+            else {
+                throw new ValidationError(
+                    'An error occurred'
+                );
+            }
         }
     }
 
-    initializeAttributes() {
-        this._attributes = {
-            email: "Email Address",
-            phone: "Phone Number",
-        };
-    }
+    
 
     skippedValidation(obj) {
         return (
@@ -2406,24 +2470,23 @@ export class FormGuard {
         );
     }
 
-    registerError(obj, message) {
-        message =
-            message ||
-            this.getUserDefinedMessage(obj.attribute, obj.method);
+    loadErrorMessage(obj, message) {
+
+        
+        if (!utils.isString(obj.rule)) {
+            obj.rule = method;
+        }
+
+        if (!utils.isString(message)) {
+            message = this.getUserMessages(obj);
+        }
+        
 
         this.skipNextValidation(obj);
 
-        if (!message) {
-            message = this.getFallbackMessage(obj.method);
-
-            if (utils.isPlainObject(message)) {
-                message = message[obj.type];
-            }
-        }
-        message = message || `validation.${obj.attribute}.${obj.method}`;
         const attrs = {
             ...obj,
-            attribute: this._attributes[obj.attribute] || obj.attribute,
+            attribute: this.getAttribute(obj.attribute),
         };
         message = message.replace(
             /:([a-zA-Z_]+)/g,
@@ -2431,6 +2494,7 @@ export class FormGuard {
         );
         this._errors[obj.attribute] = message;
     }
+
 
     getData(obj) {
         if (!utils.isObject(obj)) {
@@ -2450,7 +2514,7 @@ export class FormGuard {
         this._skips.push(obj.attribute);
     }
 
-    clearError(obj) {
+    clearErrorMessage(obj) {
         if (this._errors[obj.attribute]) {
             delete this._errors[obj.attribute];
         }
@@ -2472,19 +2536,47 @@ export class FormGuard {
      * @returns void
      */
 
+     static getKeys(thing){
+        const pattern = /([^$]+)/g;
+        const matched = thing.match(pattern);
+
+        if (!matched || matched.length !== 2) {
+            return [thing, system_locale];
+        }
+        return matched;
+    }
+
+    getAttribute(name) {
+        if (utils.isPlainObject(this._attributes)) {
+            const locale = this._attributes[FormGuard.locale];
+
+            if (utils.isPlainObject(locale)) {
+                return locale[name] || name;
+            }
+        }
+        return name;
+    }
+
+
+
     setAttributes(obj) {
         if (!utils.isObject(this._attributes)) {
-            this._attributes = {
-                name: "Full Name",
-                email: "Email Address",
-            };
+            this._attributes = {};
         }
 
         if (utils.isObject(obj)) {
-            this._attributes = {
-                ...this._attributes,
-                ...obj,
+            obj = {
+                ...(utils.isPlainObject(config.attributes) ? config.attributes : {}),
+                ...obj 
             };
+            utils.forEach(obj, (value, key) => {
+                const [message_key, locale] = FormGuard.getKeys(key);
+                this._attributes[locale] = {
+                    ...(utils.isPlainObject(this._attributes[locale]) ? this._attributes[locale] : {}),
+                    [message_key]: value
+                };
+            })
+            
         }
 
         return this;
@@ -2515,134 +2607,121 @@ export class FormGuard {
     }
 
 
-    loadFallbackMessages() {
-        const fallback_messages = {
-            accepted: "The :attribute must be accepted.",
-            date: "The field must be a valid date.",
-            url: "The field must be a valid URL.",
-            ip: "The field must be a valid IP address.",
-            uuid: "The field must be a valid UUID.",
-            integer: "The field must be an integer.",
-            alpha_spaces: "The field may only contain letters and spaces.",
-            timezone: "The field must be a valid timezone.",
-            credit_card: "The field must be a valid credit card number.",
-            phone: "The field must be a valid phone number.",
-            contains: "The field must contain :value.",
-            not_contains: "The field must not contain :value.",
-            min: {
-                numeric: "The value must be at least :min.",
-                string: "The length must be at least :min characters.",
-                array: "The array must have at least :min items.",
-                file: "The file size must be at least :min bytes.",
-                files: "The files sizes must be at least :min bytes.",
-            },
-            unique: "The value must be unique.",
-            exists: "The value must exist in the dataset.",
-            max: {
-                numeric: "The value must not be greater than :max.",
-                string: "The length must not be greater than :max characters.",
-                array: "The array must not have more than :max items.",
-                file: "The file size must not exceed :max bytes.",
-                files: "The files sizes must not exceed :max bytes.",
-            },
-            image: "The :attribute must be an image.",
-            video: "The :attribute must be an video.",
-            audio: "The :attribute must be an audio.",
-            digits: "The :attribute must be :digits digits.",
-            file: "The :attribute must be a file.",
-            files: "The :attribute expects at least a file to be selected",
-            filled: "The :attribute field must have a value.",
-            mimes: "The :attribute must be a file of type: :values.",
-            mimetypes: "The :attribute must be a file of type: :values.",
-            gt: {
-                numeric: "The value must be greater than :gt.",
-                string: "The length must be greater than :gt characters.",
-                array: "The array must have more than :gt items.",
-                file: "The file size must be greater than :gt bytes.",
-                files: "The files sizes must be greater than :gt bytes.",
-            },
-            lt: {
-                numeric: "The value must be less than :lt.",
-                string: "The length must be less than :lt characters.",
-                array: "The array must have fewer than :lt items.",
-                file: "The file size must be less than :lt bytes.",
-                files: "The files sizes must be less than :lt bytes.",
-            },
-            gte: {
-                numeric: "The value must be greater than or equal to :gte.",
-                string: "The length must be greater than or equal to :gte characters.",
-                array: "The array must have at least :gte items.",
-                file: "The file size must be greater than or equal to :gte bytes.",
-                files: "The files sizes must be greater than or equal to :gte bytes.",
-            },
-            lte: {
-                numeric: "The value must be less than or equal to :lte.",
-                string: "The length must be less than or equal to :lte characters.",
-                array: "The array must have at most :lte items.",
-                file: "The file size must be less than or equal to :lte bytes.",
-                files: "The files sizes must be less than or equal to :lte bytes.",
-            },
-            alpha: "The field may only contain alphabets",
-            alpha_: "The field may only contain letters and underscores.",
-            alpha_dash:
-                "The field may only contain letters, numbers, dashes, and underscores.",
-            alpha_num: "The field may only contain letters and numbers.",
-            boolean: "The field must be a boolean value.",
-            confirmed: "The field confirmation does not match.",
-            between: {
-                numeric: "The value must be between :min and :max.",
-                string: "The length must be between :min and :max characters.",
-                array: "The array must have between :min and :max items.",
-                file: "The file size must be between :min and :max bytes.",
-                files: "The files sizes must be between :min and :max bytes.",
-            },
-            password: {
-                length: "The Password must be at least :length characters.",
-                letters: "The Password must contain at least one letter.",
-                mixed: "The Password must contain at least one uppercase and one lowercase letter.",
-                numbers: "The Password must contain at least one number.",
-                symbols: "The Password must contain at least one symbol.",
-                uncompromised:
-                    "The given Password has appeared in a data leak. Please choose a different :attribute.",
-            },
-            email: "The field must be a valid email address.",
-            in_array: "The field value must be one of the following: :values.",
-            in: "The field value must be one of the following: :values.",
-            regex: "The field format is invalid.",
-            same: "The field must match the :other field.",
-            ends_with: "The field must end with one of the following: :values.",
-            starts_with:
-                "The field must start with one of the following: :values.",
-            not_in: "The field value must not be one of the following: :values.",
-            required_if: "The field is required when :other is :value.",
-            required: "The field is required.",
-            uppercase: "The field must be uppercase letters only.",
-            lowercase: "The field must be lowercase letters only.",
-            url: "The field must be a valid URL.",
-            uuid: "The field must be a valid UUID.",
-            range: "The value must be between :min and :max.",
-            multiple_of: "The value must be a multiple of :number.",
-            active_url: "The :attribute is not a valid URL.",
-            numeric: "The :attribute must be a number.",
-            pattern: "Expected pattern is :pattern",
-            required_unless:
-                "The :attribute field is required unless :other is in :values.",
-            required_with:
-                "The :attribute field is required when :values is present.",
-            required_with_all:
-                "The :attribute field is required when :values are present.",
-            required_without:
-                "The :attribute field is required when :values is not present.",
-            required_without_all:
-                "The :attribute field is required when none of :values are present.",
-            after: 'The :attribute must be a date after :date.',
-            before: 'The :attribute must be a date before :date.',
-        };
-
-        this.fallback_messages = this.translations[FormGuard.locale] || fallback_messages;
+    loadFallbackMessages(fallback_messages) {
+        FormGuard._fallback_messages = FormGuard._translations[FormGuard.locale] || utils.castObject(fallback_messages, {});
     }
+    
+    static setPriority(name, priority) {
+        const priors = {
+            p1: 'fillables',
+            p2: 'types',
+            p3: 'stabilizers',
+        }
+        const priorities = ["fillables", "types", "stabilizers"];
+        priority = utils.castNumber(priority, 4);
+
+        this.resetPriority(name);
+        const prior = `p${priority}`;
+
+
+        if (priors[prior]) {
+            const order = priors[prior];
+            this.registers[order].push(name);
+
+        }
+    }
+
+    static resetPriority(name) {
+        
+        for(const [registry, orders] of Object.entries(this.registers)) {
+            const order = orders.indexOf(name);
+            if (order >= 0) {
+                this.registers[registry].splice(order, 1);
+            }
+        }
+    }
+
+    static remove(name) {
+        this.resetPriority(name);
+
+        if (name in this) {
+            delete this[name];
+        }
+    }
+
+
+    static add(custom_rules, options) {
+        if (utils.isString(custom_rules)) {
+            if (utils.isPlainObject(options)) {
+                this.add({
+                    [custom_rules]: options, 
+                });
+            }
+            else if (utils.isFunction(options)) {
+                this.add({
+                    [custom_rules]: {
+                        fn: options 
+                    }
+                });
+                // this[custom_rules] = options;
+            }
+        }   
+
+        else if (utils.isArray(custom_rules)) {
+            utils.forEach(custom_rules, rules => {
+                if (utils.isPlainObject(rules) && utils.isString(rules.name)) {
+                    this.add({[rules.name]: rules})
+                }
+                else if (!utils.isPlainObject(rules)) {
+                    this.log('warn', 'Rules should be an object');
+                }
+                else if (!utils.isString(rules.name)) {
+                    this.log('warn', 'Rule name is missing');
+                }
+            });
+        }
+
+        else if (utils.isPlainObject(custom_rules)) {
+
+            utils.forEach(custom_rules, (options, name) => {
+                if (utils.isFunction(options)) {
+                    this[name] = options;
+                    return;
+                }
+                
+                const fn = eval(`(function ${name}(data){return options.fn(data);})`)
+                // const fn = options.fn;
+                
+                
+                let messages = utils.isString(options.message) ? {[name]:options.message} : {};
+
+                if (utils.isPlainObject(options.messages)) {
+                    messages = {
+                        ...(Object.fromEntries(
+                            Object.entries(options.messages)
+                                .map(([locale, message]) => [`${name}$${locale}`, message])
+                        ))
+                    }
+                }
+                
+                
+                if (utils.isFunction(fn)) {
+                    this.setSystemMessages(messages, name);
+                    this.setPriority(name, options.priority);
+                    delete this[name];
+                    this[name] = fn;
+                }
+                else {
+                    this.log('warn', `${name} fn must be a function`);
+                }
+            })
+            
+
+        }
+
+    }
+
+
 
     
 }
-
-utils.global.FormGuard = FormGuard;

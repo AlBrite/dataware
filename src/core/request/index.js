@@ -1,10 +1,8 @@
-import utils from "../core/utils";
-import cookie from "../core/cookie";
+import utils from "../utils";
+import cookie from "../cookie";
 const authCookieName = "AUTH_TOKEN";
 const xsrfCookieName = "XSRF-TOKEN";
 const xsrfHeaderName = "X-XSRF-TOKEN";
-const xcrf = cookie.read(xsrfCookieName);
-const auth = cookie.read(authCookieName);
 const authKey = "authorization";
 
 const initialize = () => {

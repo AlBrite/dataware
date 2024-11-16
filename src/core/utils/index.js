@@ -16,7 +16,9 @@ const kindOfTest = (type) => {
   return (thing) => kindOf(thing) === type
 }
 
-const typeOfTest = type => thing => typeof thing === type;
+
+
+const typeOfTest = type => (thing, falseValue = false) => typeof thing === type ? true : falseValue;
 
 /**
  * Determine if a value is an Array
@@ -108,7 +110,7 @@ const isNumber = typeOfTest('number');
  *
  * @returns {boolean} True if value is an Object, otherwise false
  */
-const isObject = (thing) => thing !== null && typeof thing === 'object';
+const isObject = (thing, falseValue = false) => thing !== null && typeof thing === 'object' ? true : falseValue;
 
 /**
  * Determine if a value is a Boolean
@@ -125,14 +127,54 @@ const isBoolean = thing => thing === true || thing === false;
  *
  * @returns {boolean} True if value is a plain Object, otherwise false
  */
-const isPlainObject = (val) => {
+const isPlainObject = (val, returnValue = false) => {
   if (kindOf(val) !== 'object') {
-    return false;
+    return returnValue;
   }
 
   const prototype = getPrototypeOf(val);
-  return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in val) && !(Symbol.iterator in val);
+  const m = (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in val) && !(Symbol.iterator in val);
+  return m ? m : returnValue;
 }
+
+const castType = (type) => {
+  const parsers = {
+    object: isPlainObject,
+    string: isString,
+    boolean: isBoolean,
+    number: isNumber,
+    array: isArray,
+    function: isFunction,
+  };
+  const defaults = {
+    object: {},
+    string: '',
+    boolean: false,
+    number: 0,
+    function: () => {},
+    array: []
+  }
+  let _parser = parsers.string;
+  let _cast = defaults.string;
+
+  if (parsers[type]) {
+    _parser = parsers[type]
+    _cast = defaults[type];
+  }
+   
+  return (thing, cast) => {
+    if (_parser(thing)) {
+      return thing;
+    }
+    return cast||_cast;
+  }
+};
+const castNumber = castType('number');
+const castObject = castType('object');
+const castString = castType('string');
+const castArray = castType('array');
+const castBoolean = castType('boolean');
+const castFunction = castType('function');
 
 /**
  * Determine if a value is a Date
@@ -219,6 +261,49 @@ const [isReadableStream, isRequest, isResponse, isHeaders] = ['ReadableStream', 
  */
 const trim = (str) => str.trim ?
   str.trim() : str.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
+
+const recursiveTrim = (str) => {
+  if (isString(str)) return trim(str);
+
+  if (isArray(str)) {
+    let newArray = [];
+    for(var i = 0; i < str.length; i++) {
+      newArray.push(isString(str[i]) ? trim(str[i]) : recursiveTrim(str[i]));
+    }
+    return newArray;
+  }
+  else if (isPlainObject(str)) {
+    return Object.fromEntries(
+      Object.entries(str).map(([key, value]) => [
+        key,
+        recursiveTrim(value)
+      ])
+    );
+  }
+  return str;
+}
+
+/**
+ * Extend List
+ */
+const enList = (list, extension) => {
+  for (var _len2 = list.length, args = new Array(_len2), _key2 = 0; _key2 < _len2; _key2++) {
+    args[_key2] = list[_key2];
+  }
+  if (isUndefined(extension)) {
+    return args;
+  }
+  else if (!isArray(extension)) {
+      extension = [extension];
+  }
+
+  const aLength = args.length;
+  const eLength = extension.length;
+  if (aLength >= eLength || eLength === 0) return args;
+
+  return extension.map((ext, i) => i + 1 > aLength ? ext : args[i])
+
+};
 
 /**
  * Iterate over an Array or an Object invoking a function for each item.
@@ -505,8 +590,7 @@ const isThenable = (thing) =>
   thing && (isObject(thing) || isFunction(thing)) && isFunction(thing.then) && isFunction(thing.catch);
 
 
-const isKnownError = kindOfTest('KnownError');
-const isValidationError = kindOfTest('ValidationError');
+
 
 const parallel = async (...tasks) => {
   await Promise.all(tasks.map((task) => task()));
@@ -528,16 +612,71 @@ const delay =  (ms) => {
 
 
 
-const join = (arrays, joiner = ", ", lastJoiner = ", ") => {
-  if (arrays.length > 1) {
-      const part = [arrays.slice(0, arrays.length - 1).join(joiner)];
+const join = (array, glue, finalGlue = '') => {
+    if (finalGlue === '') {
+      return array.join(glue);
+    }
 
-      part.push(lastJoiner);
-      part.push(arrays.slice(arrays.length - 1).join(joiner));
-      return part.join("");
-  }
-  return arrays.join("");
+    if (array.length === 0) {
+        return '';
+    }
+
+    if (array.length === 1) {
+        return array[0];
+    }
+
+    const finalItem = array.pop();
+
+    return array.join(glue) + finalGlue + finalItem;
 }
+
+const format_date = (strdate, format, type = "datetime") => {
+  
+  const placeholders = {
+      date: "yyyy-mm-dd",
+      datetime: "yyyy-mm-dd H:i:s",
+      time: "H:i:s a",
+  };
+  const matchers = /(yyyy|mm|dd|h|i|s|a)/gi;
+  
+  const placeholder = placeholders[type] || placeholders.datetime;
+  if (!isString(format)) {
+      format = placeholder;
+  }
+
+  const date = isDate(strdate) ? strdate : new Date(strdate);
+
+  const padZero = (n) => (n < 10 ? `0${n}` : n);
+
+  const yyyy = date.getFullYear();
+  if (isNaN(yyyy)) {
+    return null;
+  }
+  const mm = padZero(date.getMonth() + 1);
+  const i = padZero(date.getMinutes() || 0);
+  const dd = padZero(date.getDate());
+  const hours = date.getHours();
+  let a = "am";
+  let A = "AM";
+  let h = hours;
+
+  if (h > 12) {
+      h -= 12;
+      a = "pm";
+      A = "PM";
+  }
+  h = padZero(h);
+  const H = padZero(hours);
+  const s = padZero(date.getSeconds() || 0);
+  const pattern = /([a-zA-Z]+)/g;
+  const [MM, S, YYYY, DD, I] = [mm, s, yyyy, dd, i];
+
+  const dateObj = { yyyy, YYYY, mm, MM, s, S, h, H, a, A, dd, DD, i, I };
+  
+  return format.replace(matchers, $1 => dateObj[$1] || $1);
+
+}
+
 
 const retry = async (fn, options = {}) => {
   if (isPlainObject(options)) {
@@ -585,7 +724,7 @@ const combineArrayToObject =  (keys, values = [], defaultValue) => {
 
 const isNumeric = (thing) => {
   if (!isNumber(thing)) {
-    if (!isString(thing) || !/^([0-9]+)(\.([0-9]+))?$/.test(thing)) {
+    if (!isString(thing) || !/^[-]?\d*(\.\d+)?$/.test(thing)) {
       return false;
     }
     thing = parseFloat(thing);
@@ -595,17 +734,21 @@ const isNumeric = (thing) => {
 
 const isInteger = (thing) => {
   thing = isNumeric(thing);
-
-  return thing % 1 === 0 ? thing : false;
+  if (thing && thing % 1 === 0) {
+    return thing;
+  }
+  return false;
 };
 
+const isDecimal = (thing) => (isNumeric(thing) && !isInteger(thing)) || (isString(thing) && /^[-]?\d*(\.\d+)?$/.test(thing));
 
 
-const objectGet = (obj, ...keys) => {
+
+const objectGet = (obj) => {
   let data = obj;
-  for(var i = 0; i < keys.length; i++) {
+  for (var i = 1; i < arguments.length; i++) {
     if (isPlainObject(data)) {
-      data = data[keys[i]];
+      data = data[arguments[i]];
     } else {
       return;
     }
@@ -614,7 +757,20 @@ const objectGet = (obj, ...keys) => {
 };
 
 
+
+
+
 const isLength = (value) => isNumber(value) && value > -1 && value % 1 == 0 && value <= MAX_SAFE_INTEGER;
+
+const len = value => {
+  if (isArray(value) || isString(value)) return value.length;
+
+  if (isPlainObject(value)) {
+    return Object.keys(value).length;
+  }
+
+  return 0;
+};
 
 const isArrayLike = (value) => value != null && isLength(value.length) && !isFunction(value);
 const isObjectMethod = (name)=> typeof Object === 'function' ? typeof Object[name] === 'function' : false;
@@ -703,6 +859,72 @@ const throttle = (fn, delay) => {
 };
 
 
+
+const normalize = memorize(data => {
+  if (isPlainObject(data)) {
+    return Object.fromEntries(
+      Object.entries(data)
+        .map(([key, value]) => [key, normalize(value)])
+    )
+  }
+  else if (isArray(data)) {
+    return data.map(item => normalize(item))
+  }
+  else if (isString(data)) {
+    try {
+      const parsed = JSON.parse(trim(data));
+
+      return normalize(parsed);
+
+    } catch(e) {}
+  }
+  return data;
+});
+
+// const isEmpty = (data) => {
+//   const matcher = [
+//       isUndefined(data),
+//       data === null,
+//       isString(data) && trim(data) === "",
+//       isArray(data) && data.length === 0,
+//       isPlainObject(data) && data && Object.keys(data).length === 0,
+//   ];
+
+//   return matcher.some((item) => item);
+// };
+
+
+const isSet = value => {
+  if (isArray(value)) return !!value.length;
+
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (isString(value)) {
+    return !!trim(value).length;
+  }
+
+  if (value === false) {
+    return true;
+  }
+
+  if (value instanceof Date) {
+    return !isNaN(value.getTime());
+  }
+
+  if (typeof value === 'object') {
+    for (let _ in value) return true;
+
+    return false;
+  }
+
+  return !!String(value).length;
+};
+
+const isEmpty = value => !isSet(value);
+
+
+
 const generateUUID = (format = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx') => format.replace(/[xy]/g, (c) => {
       const r = Math.random() * 16 | 0;
       const v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -726,6 +948,49 @@ const deepClone = (obj) => {
       }
   }
   return clone;
+};
+
+
+const isEmail = (str) => (
+  isString(str) && 
+  /^(?:[A-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]{2,}(?:[a-z0-9-]*[a-z0-9])?|\[(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?|[a-z0-9-]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])$/i.test(str)
+);
+
+const isUuid = (str) => (
+  isString(str) &&
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(str)
+);
+
+const isUrl = (str) => (
+  isString(str) &&
+  /^(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?$/i.test(str)
+);
+
+const isIpAddress = (str) => (
+  isString(str) &&
+  /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(str)
+);
+
+const isObj = (obj, ifNotReturn = {}) => {
+  if (!isPlainObject(obj)) {
+    return ifNotReturn;
+  }
+  return obj;
+}
+
+const wrap = (value) => {
+  if (isArray(value)) {
+    return value;
+  }
+  if (isUndefined(value)) {
+    return [];
+  }
+  else if (isString(value)) {
+    return [value];
+  }
+  try {
+    return Array.from(value);
+  } catch(e) {}
 };
 
 class Observer {
@@ -783,6 +1048,7 @@ const watch = (predictive, callback) => {
 // *********************
 
 export default {
+  isObj,
   deepClone,
   memorize,
   throttle,
@@ -851,6 +1117,24 @@ export default {
   isContextDefined,
   isAsyncFn,
   isThenable,
-  isKnownError,
-  isValidationError
+  isEmpty,
+  isSet,
+  isDecimal,
+  isEmail,
+  isUuid,
+  isUrl,
+  isIpAddress,
+  
+  castNumber,
+  castString,
+  castObject,
+  castArray,
+  castBoolean,
+  castFunction,
+  enList,
+  
+
+  normalize,
+  wrap,
+  format_date
 };
